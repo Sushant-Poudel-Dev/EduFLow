@@ -1,132 +1,122 @@
 "use client";
 
-import {
+import React, {
   createContext,
   useContext,
   useEffect,
   useState,
-  ReactNode,
+  useMemo,
+  useCallback,
 } from "react";
-import { createClient } from "@/lib/supabaseClient";
-import { Session, User } from "@supabase/supabase-js";
+import { createClient as createBrowserClient } from "@/lib/supabaseClient";
 
-// Auth context types
-interface AuthContextProps {
-  user: User | null;
-  session: Session | null;
+// MinimalUser for quick auth checks without exposing full profile
+type MinimalUser = { id: string; email: string } | null;
+type UserProfile = {
+  id: string;
+  email: string;
+  phone_number: number;
+  status: string;
+  created_at: string;
+  updated_at: string;
+};
+
+// Everything under AuthContextState
+type AuthContextState = {
+  user: MinimalUser;
+  profile: UserProfile | null;
+  roles: string[];
   loading: boolean;
-  error: string | null;
-  login: (email: string, password: string) => Promise<void>;
-  logout: () => Promise<void>;
-  refreshSession: () => Promise<void>;
-}
+  signOut: () => Promise<void>;
+};
 
-// Create context
-const AuthContext = createContext<AuthContextProps | undefined>(undefined);
+// Initialize context with undefined so that we can check if it's used outside of provider
+const AuthContext = createContext<AuthContextState | undefined>(undefined);
 
-export const AuthProvider = ({ children }: { children: ReactNode }) => {
-  const supabase = createClient();
-  const [user, setUser] = useState<User | null>(null);
-  const [session, setSession] = useState<Session | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+export function AuthProvider({ children }: { children: React.ReactNode }) {
+  // We use useMemo to ensure the client is only created once per app lifecycle
+  const supabase = useMemo(() => createBrowserClient(), []);
+  // <MinimalUser> is used to ensure we only store the necessary user info for auth checks, not the full profile
+  const [user, setUser] = useState<MinimalUser>(null);
+  const [profile, setProfile] = useState<UserProfile | null>(null);
+  const [roles, setRoles] = useState<string[]>([]);
+  const [loading, setLoading] = useState<boolean>(true);
 
-  // Initialize session on mount
-  useEffect(() => {
-    const initialize = async () => {
-      try {
-        const { data } = await supabase.auth.getSession();
-        setSession(data.session);
-        setUser(data.session?.user || null);
-      } catch (err: unknown) {
-        console.error("Auth initialization error", err);
-        setError(err instanceof Error ? err.message : "Unknown error");
-      } finally {
-        setLoading(false);
+  // AbortSignal is added as a signal parameter to allow cancellation of the fetch when the component unmounts or when auth state changes
+  // This prevents potential memory leaks and ensures we don't update state on an unmounted component
+  const fetchMe = useCallback(async (signal?: AbortSignal) => {
+    setLoading(true);
+    try {
+      const res = await fetch("/api/me", { cache: "no-store", signal });
+      if (!res.ok) {
+        setUser(null);
+        setProfile(null);
+        setRoles([]);
+        return;
       }
-    };
+      const data = await res.json();
+      setUser(data.user ?? null);
+      setProfile(data.profile ?? null);
+      setRoles(Array.isArray(data.roles) ? data.roles : []);
+    } catch (err) {
+      if (err instanceof Error && err.name === "AbortError") return;
+      console.error(err);
+      setUser(null);
+      setProfile(null);
+      setRoles([]);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
-    initialize();
+  useEffect(() => {
+    // Creating a new AbortController for each time the effect runs to ensure we can cancel the fetchMe call
+    // This is important because if the auth state changes rapidly, we want to make sure we don't have multiple fetchMe calls running simultaneously and potentially updating state after the component has unmounted
+    const controller = new AbortController();
 
-    // Listen for auth state changes
-    const { data: listener } = supabase.auth.onAuthStateChange(
-      (_event, newSession) => {
-        setSession(newSession);
-        setUser(newSession?.user || null);
-      },
-    );
+    // Now we send the signal to fetchMe so that it can listen for cancellation if needed
+    fetchMe(controller.signal);
+
+    const { data } = supabase.auth.onAuthStateChange(() => {
+      // Here we send an empty parameter to fetchMe because we want it to create a new AbortController
+      // This ensures that if the auth state changes while a fetch is in progress, the previous fetch will be cancelled and won't update state after the component has unmounted
+      fetchMe();
+    });
 
     return () => {
-      listener.subscription.unsubscribe();
+      // After components unmounts or before rerun, we abort any ongoing fetchMe calls
+      controller.abort();
+      if (!data) return;
+      if ("subscription" in data) {
+        const unsub = data.subscription?.unsubscribe;
+        if (typeof unsub === "function") unsub();
+        return;
+      }
+      const unsub = (data as { unsubscribe?: () => void }).unsubscribe;
+      if (typeof unsub === "function") unsub();
     };
-  }, [supabase]);
+    // supabase and fetchMe are dependencies because if either of them changes, we want to rerun the effect
+  }, [supabase, fetchMe]);
 
-  // Login via Supabase
-  const login = async (email: string, password: string) => {
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await fetch("/api/auth/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password }),
-      });
+  const signOut = useCallback(async () => {
+    await supabase.auth.signOut();
+    await fetchMe();
+  }, [supabase, fetchMe]);
 
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Login failed");
-
-      setSession(data.session);
-      setUser(data.session.user);
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Unknown login error");
-      throw err;
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // Logout via API
-  const logout = async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await fetch("/api/auth/logout", { method: "POST" });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Logout failed");
-
-      setSession(null);
-      setUser(null);
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Unknown logout error");
-      console.error(err);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // Refresh session (optional utility)
-  const refreshSession = async () => {
-    try {
-      const { data } = await supabase.auth.getSession();
-      setSession(data.session);
-      setUser(data.session?.user || null);
-    } catch (err: unknown) {
-      console.error("Failed to refresh session", err);
-    }
-  };
+  const contextValue = useMemo(
+    () => ({ user, profile, roles, loading, signOut }),
+    [user, profile, roles, loading, signOut],
+  );
 
   return (
-    <AuthContext.Provider
-      value={{ user, session, loading, error, login, logout, refreshSession }}
-    >
-      {children}
-    </AuthContext.Provider>
+    <AuthContext.Provider value={contextValue}>{children}</AuthContext.Provider>
   );
-};
+}
 
-// Hook for consuming AuthContext
-export const useAuth = () => {
-  const context = useContext(AuthContext);
-  if (!context) throw new Error("useAuth must be used within AuthProvider");
-  return context;
-};
+export function useAuth() {
+  const ctx = useContext(AuthContext);
+  if (!ctx) {
+    throw new Error("useAuth must be used within an AuthProvider");
+  }
+  return ctx;
+}

@@ -10,6 +10,7 @@ export type UserProfile = {
   updated_at: string;
 };
 
+// RoleRow is the base type for the result of user_roles query
 type RoleRow = {
   roles?: { name: string }[] | null;
 };
@@ -20,9 +21,11 @@ export type UserWithRoles = {
   roles: string[];
 };
 
+// This is the main export function that extracts user with roles assigned
+// Promise because this is an async function so eventually it will return the UserWithRoles object
 export async function getUserWithRoles(
   userId: string,
-  supabase?: SupabaseClient,
+  supabase?: SupabaseClient, // Client paramater that allows us to reuse an existing client if provided, or create a new one if not
 ): Promise<UserWithRoles> {
   const client = supabase ?? (await createServerClient());
 

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, startTransition } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, usePathname } from "next/navigation";
 import { useAuth } from "@/context/AuthContext";
 
 type ProtectedRouteProps = {
@@ -15,6 +15,7 @@ export default function ProtectedRoute({
 }: ProtectedRouteProps) {
   const { user, roles = [], loading } = useAuth();
   const router = useRouter();
+  const pathname = usePathname();
 
   const needsRoleCheck = !!allowedRoles && allowedRoles.length > 0;
   const [checking, setChecking] = useState(needsRoleCheck);
@@ -23,7 +24,9 @@ export default function ProtectedRoute({
     if (loading) return;
 
     if (!user) {
-      router.replace("/login");
+      // Preserve the page the user was trying to reach so login can redirect back
+      const returnTo = encodeURIComponent(pathname ?? "/");
+      router.replace(`/login?returnTo=${returnTo}`);
       return;
     }
 
@@ -38,11 +41,12 @@ export default function ProtectedRoute({
     );
 
     if (!hasAccess) {
-      router.replace("/unauthorized");
+      // No dedicated unauthorized page — redirect to login to keep the flow simple
+      router.replace("/login");
     } else {
       startTransition(() => setChecking(false));
     }
-  }, [user, roles, loading, allowedRoles, router, needsRoleCheck]);
+  }, [user, roles, loading, allowedRoles, router, needsRoleCheck, pathname]);
 
   if (loading || checking) return <p>Loading...</p>;
 

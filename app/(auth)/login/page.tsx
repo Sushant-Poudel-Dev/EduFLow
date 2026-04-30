@@ -43,7 +43,6 @@ export default function LoginPage() {
     setLoading(true);
     try {
       // Pass returnTo if it exists, otherwise go to dashboard
-      // Role detection for Google login happens in /onboarding or /dashboard
       await loginWithGoogle(returnTo ?? "/dashboard");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Google login failed");

@@ -6,7 +6,7 @@ export async function GET(request: NextRequest) {
   const { searchParams, origin } = new URL(request.url);
 
   const code = searchParams.get("code");
-  const returnTo = searchParams.get("next");
+  const returnTo = searchParams.get("next") ?? "/dashboard";
 
   if (!code) {
     return NextResponse.redirect(`${origin}/login?error=missing_code`);
@@ -21,23 +21,6 @@ export async function GET(request: NextRequest) {
     return NextResponse.redirect(`${origin}/login?error=oauth_failed`);
   }
 
-  // Check if this user has any roles assigned
-  const {
-    data: { session },
-  } = await supabase.auth.getSession();
-  const { data: userRoles } = await supabase
-    .from("user_roles")
-    .select("id")
-    .eq("user_id", session?.user.id)
-    .limit(1);
-
-  // New user with no roles → onboarding
-  // Existing user → honour returnTo or fall back to dashboard
-  const isNewUser = !userRoles || userRoles.length === 0;
-  if (isNewUser) {
-    return NextResponse.redirect(`${origin}/onboarding`);
-  }
-
-  const safeReturnTo = returnTo?.startsWith("/") ? returnTo : "/dashboard";
+  const safeReturnTo = returnTo.startsWith("/") ? returnTo : "/dashboard";
   return NextResponse.redirect(`${origin}${safeReturnTo}`);
 }

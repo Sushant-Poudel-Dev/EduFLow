@@ -10,8 +10,10 @@ import React, {
 } from "react";
 import { createClient as createBrowserClient } from "@/lib/supabaseClient";
 
-// MinimalUser for quick auth checks without exposing full profile
+// MinimalUser only stores what we need for auth checks — no unnecessary data exposure
 type MinimalUser = { id: string; email: string } | null;
+
+// Full profile shape returned from /api/me
 type UserProfile = {
   id: string;
   email: string;
@@ -21,7 +23,7 @@ type UserProfile = {
   updated_at: string;
 };
 
-// Everything under AuthContextState
+// Shape of everything the context exposes to consumers
 type AuthContextState = {
   user: MinimalUser;
   profile: UserProfile | null;
@@ -30,79 +32,99 @@ type AuthContextState = {
   signOut: () => Promise<void>;
 };
 
-// Initialize context with undefined so that we can check if it's used outside of provider
+// Initializing with undefined lets useAuth detect if it's used outside the provider
 const AuthContext = createContext<AuthContextState | undefined>(undefined);
 
+// Module-level singleton — lives outside the component so it's never recreated on re-render
+const supabase = createBrowserClient();
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  // We use useMemo to ensure the client is only created once per app lifecycle
-  const supabase = useMemo(() => createBrowserClient(), []);
-  // <MinimalUser> is used to ensure we only store the necessary user info for auth checks, not the full profile
+  // Minimal user object just for identity checks
   const [user, setUser] = useState<MinimalUser>(null);
+
+  // Full profile for displaying user details in the UI
   const [profile, setProfile] = useState<UserProfile | null>(null);
+
+  // Roles array for access control checks (e.g. "Teacher", "Student")
   const [roles, setRoles] = useState<string[]>([]);
+
+  // True only during the initial load — never flips back to true after that
   const [loading, setLoading] = useState<boolean>(true);
 
-  // AbortSignal is added as a signal parameter to allow cancellation of the fetch when the component unmounts or when auth state changes
-  // This prevents potential memory leaks and ensures we don't update state on an unmounted component
-  const fetchMe = useCallback(async (signal?: AbortSignal) => {
-    setLoading(true);
+  // Fetches the current user's session, profile and roles from our own API
+  // Wrapped in useCallback so it has a stable reference and doesn't cause unnecessary effect reruns
+  const fetchMe = useCallback(async () => {
     try {
-      const res = await fetch("/api/me", { cache: "no-store", signal });
+      // no-store ensures we always get fresh data, not a stale cached response
+      const res = await fetch("/api/me", { cache: "no-store" });
+
+      // Non-OK response means unauthenticated or server error — clear everything
       if (!res.ok) {
         setUser(null);
         setProfile(null);
         setRoles([]);
         return;
       }
+
       const data = await res.json();
+
+      // Populate state from the API response, falling back to safe defaults
       setUser(data.user ?? null);
       setProfile(data.profile ?? null);
       setRoles(Array.isArray(data.roles) ? data.roles : []);
     } catch (err) {
-      if (err instanceof Error && err.name === "AbortError") return;
+      // Network or parse failure — treat as signed out
       console.error(err);
       setUser(null);
       setProfile(null);
       setRoles([]);
     } finally {
+      // Always turn off the loading spinner, even if the fetch failed
       setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    // Creating a new AbortController for each time the effect runs to ensure we can cancel the fetchMe call
-    // This is important because if the auth state changes rapidly, we want to make sure we don't have multiple fetchMe calls running simultaneously and potentially updating state after the component has unmounted
-    const controller = new AbortController();
+    // Kick off the initial fetch as soon as the provider mounts
+    fetchMe();
 
-    // Now we send the signal to fetchMe so that it can listen for cancellation if needed
-    fetchMe(controller.signal);
-
-    const { data } = supabase.auth.onAuthStateChange(() => {
-      // Here we send an empty parameter to fetchMe because we want it to create a new AbortController
-      // This ensures that if the auth state changes while a fetch is in progress, the previous fetch will be cancelled and won't update state after the component has unmounted
-      fetchMe();
-    });
-
-    return () => {
-      // After components unmounts or before rerun, we abort any ongoing fetchMe calls
-      controller.abort();
-      if (!data) return;
-      if ("subscription" in data) {
-        const unsub = data.subscription?.unsubscribe;
-        if (typeof unsub === "function") unsub();
+    // Subscribe to Supabase auth events for the lifetime of this provider
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((event, session) => {
+      // User explicitly signed out — clear state immediately, no network call needed
+      if (event === "SIGNED_OUT") {
+        setUser(null);
+        setProfile(null);
+        setRoles([]);
+        setLoading(false);
         return;
       }
-      const unsub = (data as { unsubscribe?: () => void }).unsubscribe;
-      if (typeof unsub === "function") unsub();
-    };
-    // supabase and fetchMe are dependencies because if either of them changes, we want to rerun the effect
-  }, [supabase, fetchMe]);
 
+      // SIGNED_IN fires on login but also on tab refocus and token refresh
+      // We guard against redundant fetches by checking if this is actually a new user
+      if (event === "SIGNED_IN" && session?.user) {
+        setUser((prev) => {
+          // Same user already loaded — skip the fetch entirely, return existing state
+          if (prev?.id === session.user.id) return prev;
+
+          // Different or new user — fetch their full profile and roles
+          fetchMe();
+          return prev;
+        });
+      }
+    });
+
+    // Unsubscribe from the auth listener when the provider unmounts
+    return () => subscription.unsubscribe();
+  }, [fetchMe]);
+
+  // Signs the user out of Supabase — the SIGNED_OUT event above handles clearing state
   const signOut = useCallback(async () => {
     await supabase.auth.signOut();
-    await fetchMe();
-  }, [supabase, fetchMe]);
+  }, []);
 
+  // Memoized so consumers only re-render when something actually changes
   const contextValue = useMemo(
     () => ({ user, profile, roles, loading, signOut }),
     [user, profile, roles, loading, signOut],
@@ -113,10 +135,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   );
 }
 
+// Custom hook that throws if used outside the provider, preventing silent bugs
 export function useAuth() {
   const ctx = useContext(AuthContext);
-  if (!ctx) {
-    throw new Error("useAuth must be used within an AuthProvider");
-  }
+  if (!ctx) throw new Error("useAuth must be used within an AuthProvider");
   return ctx;
 }

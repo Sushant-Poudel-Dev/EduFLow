@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, startTransition } from "react";
+import { useEffect } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import { useAuth } from "@/context/AuthContext";
 
@@ -17,38 +17,29 @@ export default function ProtectedRoute({
   const router = useRouter();
   const pathname = usePathname();
 
-  const needsRoleCheck = !!allowedRoles && allowedRoles.length > 0;
-  const [checking, setChecking] = useState(needsRoleCheck);
-
   useEffect(() => {
     if (loading) return;
 
     if (!user) {
-      // Preserve the page the user was trying to reach so login can redirect back
-      const returnTo = encodeURIComponent(pathname ?? "/");
-      router.replace(`/login?returnTo=${returnTo}`);
+      const fallbackUrl = encodeURIComponent(pathname ?? "/");
+      router.replace(`/login?returnTo=${fallbackUrl}`);
       return;
     }
 
-    if (!needsRoleCheck) {
-      startTransition(() => setChecking(false));
-      return;
+    // Only check roles if allowedRoles was explicitly provided
+    if (allowedRoles && allowedRoles.length > 0) {
+      const allowedLower = allowedRoles.map((r) => r.toLowerCase());
+      const hasAccess = roles.some((role) =>
+        allowedLower.includes(role.toLowerCase()),
+      );
+
+      if (!hasAccess) {
+        router.replace("/unauthorized"); // or wherever makes sense
+      }
     }
+  }, [user, roles, loading, allowedRoles, router, pathname]);
 
-    const allowedLower = allowedRoles!.map((r) => r.toLowerCase());
-    const hasAccess = roles.some((role) =>
-      allowedLower.includes(role.toLowerCase()),
-    );
-
-    if (!hasAccess) {
-      // No dedicated unauthorized page — redirect to login to keep the flow simple
-      router.replace("/login");
-    } else {
-      startTransition(() => setChecking(false));
-    }
-  }, [user, roles, loading, allowedRoles, router, needsRoleCheck, pathname]);
-
-  if (loading || checking) return <p>Loading...</p>;
+  if (loading) return <p>Loading...</p>;
 
   return <>{children}</>;
 }

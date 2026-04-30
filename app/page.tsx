@@ -48,6 +48,23 @@ function HomeContent() {
       >
         Sign out
       </button>
+
+      <div
+        style={{
+          marginTop: 32,
+          padding: 16,
+          border: "1px solid #ccc",
+          borderRadius: 8,
+        }}
+      >
+        <p>Explore the new dashboard:</p>
+        <a
+          href='/dashboard'
+          style={{ color: "#0070f3", fontWeight: "bold" }}
+        >
+          Go to Dashboard →
+        </a>
+      </div>
     </main>
   );
 }

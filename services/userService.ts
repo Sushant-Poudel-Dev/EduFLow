@@ -12,35 +12,36 @@ export type UserProfile = {
 
 // RoleRow is the base type for the result of user_roles query
 type RoleRow = {
-  roles?: { name: string }[] | null;
+  roles?: { name: string } | { name: string }[] | null;
 };
 
 export type UserWithRoles = {
   user: { id: string; email: string };
-  profile: UserProfile;
+  profile: UserProfile | null;
   roles: string[];
 };
 
-// This is the main export function that extracts user with roles assigned
+// export function that extracts user with roles assigned
 // Promise because this is an async function so eventually it will return the UserWithRoles object
 export async function getUserWithRoles(
   userId: string,
   supabase?: SupabaseClient, // Client paramater that allows us to reuse an existing client if provided, or create a new one if not
 ): Promise<UserWithRoles> {
+  // create a serverClient if its not already created
   const client = supabase ?? (await createServerClient());
 
+  // get profile from the server as client now has API access to the database
   const profileResult = await client
     .from("users")
     .select("*")
     .eq("id", userId)
-    .single();
+    .maybeSingle();
   const profile = profileResult.data as UserProfile | null;
   const profileError = profileResult.error;
 
-  if (profileError || !profile) {
-    throw new Error(profileError?.message || "User profile not found");
-  }
+  if (profileError) throw new Error(profileError.message);
 
+  // fetch roles from server
   const rolesResult = await client
     .from("user_roles")
     .select("roles(name)")
@@ -48,19 +49,29 @@ export async function getUserWithRoles(
   const rolesData = rolesResult.data as RoleRow[] | null;
   const rolesError = rolesResult.error;
 
-  if (rolesError) throw new Error(rolesError.message);
+  // If role fetch fails (RLS/relation mismatch), avoid crashing the whole auth flow.
+  if (rolesError) {
+    return {
+      user: { id: userId, email: profile?.email ?? "" },
+      profile,
+      roles: [],
+    };
+  }
 
-  const roles: string[] =
-    rolesData
-      ?.flatMap((r) =>
-        (r.roles ?? []).map((role) =>
-          role && role.name ? role.name.toLowerCase() : "",
-        ),
-      )
-      .filter((name): name is string => Boolean(name)) || [];
+  const roles: string[] = (rolesData ?? [])
+    .flatMap((r) => {
+      const relation = r.roles;
+      if (!relation) return [];
+
+      const roleItems = Array.isArray(relation) ? relation : [relation];
+      return roleItems.map((role) =>
+        role?.name ? role.name.toLowerCase() : "",
+      );
+    })
+    .filter((name): name is string => Boolean(name));
 
   return {
-    user: { id: profile.id, email: profile.email },
+    user: { id: userId, email: profile?.email ?? "" },
     profile,
     roles,
   };

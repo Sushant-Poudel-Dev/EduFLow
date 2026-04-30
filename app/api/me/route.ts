@@ -15,9 +15,17 @@ export async function GET() {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const userWithRoles = await getUserWithRoles(user.id, supabase);
-
-    return NextResponse.json(userWithRoles);
+    try {
+      const userWithRoles = await getUserWithRoles(user.id, supabase);
+      return NextResponse.json(userWithRoles);
+    } catch {
+      // Keep auth flow alive even if profile/roles queries fail (RLS/schema mismatch).
+      return NextResponse.json({
+        user: { id: user.id, email: user.email ?? "" },
+        profile: null,
+        roles: [],
+      });
+    }
   } catch (err: unknown) {
     if (err instanceof Error) {
       return NextResponse.json({ error: err.message }, { status: 500 });
